@@ -1,4 +1,3 @@
-#test
 import os
 import logging
 import asyncio
@@ -15,6 +14,7 @@ import telegram
 from telegram import (
     Update,
     User,
+    InputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     BotCommand
@@ -687,12 +687,26 @@ async def audio_file_handle(update: Update, context: CallbackContext):
             if transcribed_text is None:
                 transcribed_text = ""
 
+    # Создаем временный файл и записываем в него текстовую строку
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        text_path = os.path.join(tmp_dir, f"{audio.file_name}.txt")
+        with open(text_path, 'w') as file:
+            file.write(transcribed_text)
+
+        # Отправляем файл пользователю
+        with open(text_path, 'rb') as file:
+            await update.message.reply_document(document=InputFile(file))
+
+        # Удаляем временный файл
+        os.remove(text_path)
+
+    # TODO clean leather OLD Code with send plainText
     # Send the transcribed text back to the user
-    text = f"🍾: <i>{transcribed_text}</i>"
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    # text = f"🍾: <i>{transcribed_text}</i>"
+    # await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
     # Process the transcribed text further if needed
-    await message_handle(update, context, message=transcribed_text)
+    #await message_handle(update, context, message=transcribed_text)
 
 async def post_init(application: Application):
     await application.bot.set_my_commands([
