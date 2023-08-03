@@ -388,6 +388,8 @@ async def audio_file_handle(update: Update, context: CallbackContext):
         await update.message.reply_text("🥲 Please, send an audio file.")
         return
 
+    await update.message.reply_text("📝 When the transcription is completed, we will send you a text file, but for now we can chat.")
+
     # Download the audio file
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_dir = Path(tmp_dir)
@@ -402,7 +404,6 @@ async def audio_file_handle(update: Update, context: CallbackContext):
 
         # Transcribe the audio file
         # transcribe
-        await update.message.reply_text("📝 When the transcription is over, we will send you a text file, but for now we can chat.")
         with open(audio_path, "rb") as f:
             transcribed_text = await openai_utils.transcribe_audio(f)
 
@@ -421,7 +422,7 @@ async def audio_file_handle(update: Update, context: CallbackContext):
 
         # Удаляем временный файл
         os.remove(text_path)
-        
+
     # TODO clean leather OLD Code with send plainText
     # Send the transcribed text back to the user
     # text = f"🍾: <i>{transcribed_text}</i>"
