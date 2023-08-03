@@ -43,7 +43,8 @@ logger = logging.getLogger(__name__)
 user_semaphores = {}
 user_tasks = {}
 
-HELP_MESSAGE = """Commands:
+HELP_MESSAGE = "Maybe later?"
+HELP_MESSAGE2 = """Commands:
 ⚪ /retry – Regenerate last bot answer
 ⚪ /new – Start new dialog
 ⚪ /mode – Select chat mode
@@ -139,7 +140,7 @@ async def start_handle(update: Update, context: CallbackContext):
     db.set_user_attribute(user_id, "last_interaction", datetime.now())
     db.start_new_dialog(user_id)
 
-    reply_text = "Hi! I'm <b>ChatGPT</b> bot implemented with OpenAI API 🤖\n\n"
+    reply_text = "Hi! I'm a bot with implemented OpenAI API 🤖\n\n"
     #reply_text += HELP_MESSAGE
 
     await update.message.reply_text(reply_text, parse_mode=ParseMode.HTML)
@@ -370,6 +371,64 @@ async def voice_message_handle(update: Update, context: CallbackContext):
 
     await message_handle(update, context, message=transcribed_text)
 
+
+async def audio_file_handle(update: Update, context: CallbackContext):
+    if not await is_bot_mentioned(update, context):
+        return
+
+    await register_user_if_not_exists(update, context, update.message.from_user)
+    if await is_previous_message_not_answered_yet(update, context):
+        return
+
+    user_id = update.message.from_user.id
+    db.set_user_attribute(user_id, "last_interaction", datetime.now())
+
+    audio = update.message.audio
+    if not audio:
+        await update.message.reply_text("🥲 Please, send an audio file.")
+        return
+
+    # Download the audio file
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_dir = Path(tmp_dir)
+        audio_path = tmp_dir / f"{audio.file_id}{audio.file_name}"
+        # download
+        voice_file = await context.bot.get_file(audio.file_id)
+        await voice_file.download_to_drive(audio_path)
+
+        # convert to mp3
+        #audio_mp3_path = tmp_dir / f"{audio.file_id}mp3.mp3"
+        #pydub.AudioSegment.from_file(voice_file).export(audio_mp3_path, format="mp3")
+
+        # Transcribe the audio file
+        # transcribe
+        await update.message.reply_text("📝 When the transcription is over, we will send you a text file, but for now we can chat.")
+        with open(audio_path, "rb") as f:
+            transcribed_text = await openai_utils.transcribe_audio(f)
+
+            if transcribed_text is None:
+                transcribed_text = ""
+
+    # Создаем временный файл и записываем в него текстовую строку
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        text_path = os.path.join(tmp_dir, f"{audio.file_name}.txt")
+        with open(text_path, 'w') as file:
+            file.write(transcribed_text)
+
+        # Отправляем файл пользователю
+        with open(text_path, 'rb') as file:
+            await update.message.reply_document(document=InputFile(file))
+
+        # Удаляем временный файл
+        os.remove(text_path)
+        
+    # TODO clean leather OLD Code with send plainText
+    # Send the transcribed text back to the user
+    # text = f"🍾: <i>{transcribed_text}</i>"
+    # await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+    # Process the transcribed text further if needed
+    #await message_handle(update, context, message=transcribed_text)
 
 async def generate_image_handle(update: Update, context: CallbackContext, message=None):
     await register_user_if_not_exists(update, context, update.message.from_user)
@@ -650,63 +709,6 @@ async def error_handle(update: Update, context: CallbackContext) -> None:
     except:
         await context.bot.send_message(update.effective_chat.id, "Some error in error handler")
 
-
-async def audio_file_handle(update: Update, context: CallbackContext):
-    if not await is_bot_mentioned(update, context):
-        return
-
-    await register_user_if_not_exists(update, context, update.message.from_user)
-    if await is_previous_message_not_answered_yet(update, context):
-        return
-
-    user_id = update.message.from_user.id
-    db.set_user_attribute(user_id, "last_interaction", datetime.now())
-
-    audio = update.message.audio
-    if not audio:
-        await update.message.reply_text("🥲 Please, send an audio file.")
-        return
-
-    # Download the audio file
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_dir = Path(tmp_dir)
-        audio_path = tmp_dir / f"{audio.file_id}{audio.file_name}"
-        # download
-        voice_file = await context.bot.get_file(audio.file_id)
-        await voice_file.download_to_drive(audio_path)
-
-        # convert to mp3
-        #audio_mp3_path = tmp_dir / f"{audio.file_id}mp3.mp3"
-        #pydub.AudioSegment.from_file(voice_file).export(audio_mp3_path, format="mp3")
-
-        # Transcribe the audio file
-        # transcribe
-        with open(audio_path, "rb") as f:
-            transcribed_text = await openai_utils.transcribe_audio(f)
-
-            if transcribed_text is None:
-                transcribed_text = ""
-
-    # Создаем временный файл и записываем в него текстовую строку
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        text_path = os.path.join(tmp_dir, f"{audio.file_name}.txt")
-        with open(text_path, 'w') as file:
-            file.write(transcribed_text)
-
-        # Отправляем файл пользователю
-        with open(text_path, 'rb') as file:
-            await update.message.reply_document(document=InputFile(file))
-
-        # Удаляем временный файл
-        os.remove(text_path)
-
-    # TODO clean leather OLD Code with send plainText
-    # Send the transcribed text back to the user
-    # text = f"🍾: <i>{transcribed_text}</i>"
-    # await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-
-    # Process the transcribed text further if needed
-    #await message_handle(update, context, message=transcribed_text)
 
 async def post_init(application: Application):
     await application.bot.set_my_commands([
