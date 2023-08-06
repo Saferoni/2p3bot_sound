@@ -423,6 +423,8 @@ async def audio_file_handle(update: Update, context: CallbackContext):
         # Удаляем временный файл
         os.remove(text_path)
 
+        #if (update.message.text.strip() != ""):
+         #   await message_handle(update, context, message=f"{update.message.text}:---{transcribed_text}---")
     # TODO clean leather OLD Code with send plainText
     # Send the transcribed text back to the user
     # text = f"🍾: <i>{transcribed_text}</i>"
