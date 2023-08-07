@@ -127,11 +127,7 @@ async def start_handle(update: Update, context: CallbackContext):
     db.set_user_attribute(user_id, "last_interaction", datetime.now())
     db.start_new_dialog(user_id)
 
-    reply_text = HELP_MESSAGE
-
     await translate_and_reply(update, context)
-
-    #await update.message.reply_text(reply_text, parse_mode=ParseMode.HTML)
 
 
 async def help_handle(update: Update, context: CallbackContext):
