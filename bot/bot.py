@@ -1,5 +1,6 @@
 import os
 import logging
+import math
 import asyncio
 import traceback
 import html
@@ -15,8 +16,6 @@ from telegram import (
     Update,
     User,
     InputFile,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
     BotCommand
 )
 from telegram.ext import (
@@ -25,11 +24,10 @@ from telegram.ext import (
     CallbackContext,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     AIORateLimiter,
     filters
 )
-from telegram.constants import ParseMode, ChatAction
+from telegram.constants import ParseMode
 
 import config
 import database
@@ -43,35 +41,12 @@ logger = logging.getLogger(__name__)
 user_semaphores = {}
 user_tasks = {}
 
-HELP_MESSAGE = "Maybe later?"
-HELP_MESSAGE2 = """Commands:
-⚪ /retry – Regenerate last bot answer
-⚪ /new – Start new dialog
-⚪ /mode – Select chat mode
-⚪ /settings – Show settings
-⚪ /balance – Show balance
-⚪ /help – Show help
+HELP_MESSAGE = "Hi! I'm a bot with implemented OpenAI API 🤖\n\n"
 
-🎨 Generate images from text prompts in <b>👩‍🎨 Artist</b> /mode
-👥 Add bot to <b>group chat</b>: /help_group_chat
-🎤 You can send <b>Voice Messages</b> instead of text
-"""
+# TODO /help message about bot and how can use (сделать по аналогии с локализованним стартом на всех язиках)
+HELP_GROUP_CHAT_MESSAGE = "Maybe later?"
 
-HELP_GROUP_CHAT_MESSAGE = """You can add bot to any <b>group chat</b> to help and entertain its participants!
-
-Instructions (see <b>video</b> below):
-1. Add the bot to the group chat
-2. Make it an <b>admin</b>, so that it can see messages (all other rights can be restricted)
-3. You're awesome!
-
-To get a reply from the bot in the chat – @ <b>tag</b> it or <b>reply</b> to its message.
-For example: "{bot_username} write a poem about Telegram"
-"""
-
-
-def split_text_into_chunks(text, chunk_size):
-    for i in range(0, len(text), chunk_size):
-        yield text[i:i + chunk_size]
+LOCALIZED_PROMPT_FOR_GPT_TO_TRANSLATE_START = "Переведи данную строку 'Hello! I\'m glad to welcome you! I\'m a master of transforming sound waves into text characters. Share your audio or dictation, and I\'ll create a text version for you. After that, we can converse on any topic you\'re interested in through our chat – as my mind operates as smoothly as Swiss watches! 🕐💬' и видай в ответе только ее на язике "
 
 
 async def register_user_if_not_exists(update: Update, context: CallbackContext, user: User):
@@ -133,6 +108,37 @@ async def is_bot_mentioned(update: Update, context: CallbackContext):
          return False
 
 
+async def translate_and_reply(update: Update, context: CallbackContext):
+    await register_user_if_not_exists(update, context, update.message.from_user)
+    if await is_previous_message_not_answered_yet(update, context): return
+
+    user_id = update.message.from_user.id
+    db.set_user_attribute(user_id, "last_interaction", datetime.now())
+
+    localized_prompt = f"{LOCALIZED_PROMPT_FOR_GPT_TO_TRANSLATE_START}{update.message.from_user.language_code}"
+
+    try:
+        async with user_semaphores[user_id]:
+            # Send placeholder message to user
+            placeholder_message = await update.message.reply_text("...")
+
+            # Send typing action
+            await update.message.chat.send_action(action="typing")
+
+            # Translate the prompt and get the response from OpenAI
+            translated_response = await openai_utils.translate_text(localized_prompt)
+
+            # Update user data
+            new_dialog_message = {"user": localized_prompt, "bot": translated_response, "date": datetime.now()}
+            db.set_dialog_messages(user_id, db.get_dialog_messages(user_id, dialog_id=None) + [new_dialog_message], dialog_id=None)
+
+            await context.bot.edit_message_text(translated_response, chat_id=placeholder_message.chat_id, message_id=placeholder_message.message_id, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        error_text = f"Something went wrong during translation. Reason: {e}"
+        logger.error(error_text)
+        await update.message.reply_text(error_text)
+
+
 async def start_handle(update: Update, context: CallbackContext):
     await register_user_if_not_exists(update, context, update.message.from_user)
     user_id = update.message.from_user.id
@@ -140,18 +146,16 @@ async def start_handle(update: Update, context: CallbackContext):
     db.set_user_attribute(user_id, "last_interaction", datetime.now())
     db.start_new_dialog(user_id)
 
-    reply_text = "Hi! I'm a bot with implemented OpenAI API 🤖\n\n"
-    #reply_text += HELP_MESSAGE
+    reply_text = HELP_MESSAGE
 
     await update.message.reply_text(reply_text, parse_mode=ParseMode.HTML)
-    #await show_chat_modes_handle(update, context)
 
 
 async def help_handle(update: Update, context: CallbackContext):
     await register_user_if_not_exists(update, context, update.message.from_user)
     user_id = update.message.from_user.id
     db.set_user_attribute(user_id, "last_interaction", datetime.now())
-    await update.message.reply_text(HELP_MESSAGE, parse_mode=ParseMode.HTML)
+    await update.message.reply_text(f"{HELP_GROUP_CHAT_MESSAGE}", parse_mode=ParseMode.HTML)
 
 
 async def help_group_chat_handle(update: Update, context: CallbackContext):
@@ -383,6 +387,101 @@ async def audio_file_handle(update: Update, context: CallbackContext):
     user_id = update.message.from_user.id
     db.set_user_attribute(user_id, "last_interaction", datetime.now())
 
+    await update.message.chat.send_action(action="upload_photo")
+
+    audio = update.message.audio
+    if not audio:
+        await update.message.reply_text("🥲 Please, send an audio file.")
+        return
+
+    # todo добавить перевод через транслейтера апи опен ай
+    await update.message.reply_text("📝 When the transcription is completed, we will send you a text file, but for now we can chat.")
+
+    if audio.file_size > 25 * 1024 * 1024:
+        await process_large_audio(update, context)
+    else:
+        await process_small_audio(update, context)
+
+
+async def process_large_audio(update: Update, context: CallbackContext):
+    audio = update.message.audio
+    # Download the audio file
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_dir = Path(tmp_dir)
+        audio_path = tmp_dir / f"{audio.file_id}{audio.file_name}"
+        # download
+        voice_file = await context.bot.get_file(audio.file_id)
+        await voice_file.download_to_drive(audio_path)
+
+        # Split the audio into chunks and transcribe them
+        chunk_size = 10 * 1024 * 1024  # 10 MB chunks
+        num_chunks = math.ceil(audio.file_size / chunk_size)
+        transcribed_text = ""
+
+        for i in range(num_chunks):
+            chunk_start = i * chunk_size
+            chunk_end = min((i + 1) * chunk_size, audio.file_size)
+            chunk_path = audio_path.with_suffix(f".part{i+1}")
+            chunk_path.write_bytes(audio_path.read_bytes()[chunk_start:chunk_end])
+
+            with open(chunk_path, "rb") as f:
+                chunk_transcribed_text = await openai_utils.transcribe_audio(f)
+
+                if chunk_transcribed_text is not None:
+                    transcribed_text += chunk_transcribed_text + " "
+
+            os.remove(chunk_path)
+
+        with open(tmp_dir / "transcribed_text.txt", "w") as f:
+            f.write(transcribed_text)
+
+        # Send the transcribed text back to the user
+        with open(tmp_dir / "transcribed_text.txt", "rb") as f:
+            await update.message.reply_document(document=InputFile(f))
+
+
+async def process_small_audio(update: Update, context: CallbackContext):
+    audio = update.message.audio
+    # Download the audio file
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_dir = Path(tmp_dir)
+        audio_path = tmp_dir / f"{audio.file_id}{audio.file_name}"
+        # download
+        voice_file = await context.bot.get_file(audio.file_id)
+        await voice_file.download_to_drive(audio_path)
+
+        # Transcribe the audio file
+        with open(audio_path, "rb") as f:
+            transcribed_text = await openai_utils.transcribe_audio(f)
+
+            if transcribed_text is None:
+                transcribed_text = ""
+
+        # Создаем временный файл и записываем в него текстовую строку
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            text_path = os.path.join(tmp_dir, f"{audio.file_name}.txt")
+            with open(text_path, 'w') as file:
+                file.write(transcribed_text)
+
+            # Отправляем файл пользователю
+            with open(text_path, 'rb') as file:
+                await update.message.reply_document(document=InputFile(file))
+
+            # Удаляем временный файл
+            os.remove(text_path)
+
+
+async def audio_file_handle2(update: Update, context: CallbackContext):
+    if not await is_bot_mentioned(update, context):
+        return
+
+    await register_user_if_not_exists(update, context, update.message.from_user)
+    if await is_previous_message_not_answered_yet(update, context):
+        return
+
+    user_id = update.message.from_user.id
+    db.set_user_attribute(user_id, "last_interaction", datetime.now())
+
     audio = update.message.audio
     if not audio:
         await update.message.reply_text("🥲 Please, send an audio file.")
@@ -432,6 +531,7 @@ async def audio_file_handle(update: Update, context: CallbackContext):
 
     # Process the transcribed text further if needed
     #await message_handle(update, context, message=transcribed_text)
+
 
 async def generate_image_handle(update: Update, context: CallbackContext, message=None):
     await register_user_if_not_exists(update, context, update.message.from_user)
@@ -489,198 +589,6 @@ async def cancel_handle(update: Update, context: CallbackContext):
         await update.message.reply_text("<i>Nothing to cancel...</i>", parse_mode=ParseMode.HTML)
 
 
-def get_chat_mode_menu(page_index: int):
-    n_chat_modes_per_page = config.n_chat_modes_per_page
-    text = f"Select <b>chat mode</b> ({len(config.chat_modes)} modes available):"
-
-    # buttons
-    chat_mode_keys = list(config.chat_modes.keys())
-    page_chat_mode_keys = chat_mode_keys[page_index * n_chat_modes_per_page:(page_index + 1) * n_chat_modes_per_page]
-
-    keyboard = []
-    for chat_mode_key in page_chat_mode_keys:
-        name = config.chat_modes[chat_mode_key]["name"]
-        keyboard.append([InlineKeyboardButton(name, callback_data=f"set_chat_mode|{chat_mode_key}")])
-
-    # pagination
-    if len(chat_mode_keys) > n_chat_modes_per_page:
-        is_first_page = (page_index == 0)
-        is_last_page = ((page_index + 1) * n_chat_modes_per_page >= len(chat_mode_keys))
-
-        if is_first_page:
-            keyboard.append([
-                InlineKeyboardButton("»", callback_data=f"show_chat_modes|{page_index + 1}")
-            ])
-        elif is_last_page:
-            keyboard.append([
-                InlineKeyboardButton("«", callback_data=f"show_chat_modes|{page_index - 1}"),
-            ])
-        else:
-            keyboard.append([
-                InlineKeyboardButton("«", callback_data=f"show_chat_modes|{page_index - 1}"),
-                InlineKeyboardButton("»", callback_data=f"show_chat_modes|{page_index + 1}")
-            ])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    return text, reply_markup
-
-
-async def show_chat_modes_handle(update: Update, context: CallbackContext):
-    await register_user_if_not_exists(update, context, update.message.from_user)
-    if await is_previous_message_not_answered_yet(update, context): return
-
-    user_id = update.message.from_user.id
-    db.set_user_attribute(user_id, "last_interaction", datetime.now())
-
-    text, reply_markup = get_chat_mode_menu(0)
-    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
-
-
-async def show_chat_modes_callback_handle(update: Update, context: CallbackContext):
-     await register_user_if_not_exists(update.callback_query, context, update.callback_query.from_user)
-     if await is_previous_message_not_answered_yet(update.callback_query, context): return
-
-     user_id = update.callback_query.from_user.id
-     db.set_user_attribute(user_id, "last_interaction", datetime.now())
-
-     query = update.callback_query
-     await query.answer()
-
-     page_index = int(query.data.split("|")[1])
-     if page_index < 0:
-         return
-
-     text, reply_markup = get_chat_mode_menu(page_index)
-     try:
-         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
-     except telegram.error.BadRequest as e:
-         if str(e).startswith("Message is not modified"):
-             pass
-
-
-async def set_chat_mode_handle(update: Update, context: CallbackContext):
-    await register_user_if_not_exists(update.callback_query, context, update.callback_query.from_user)
-    user_id = update.callback_query.from_user.id
-
-    query = update.callback_query
-    await query.answer()
-
-    chat_mode = query.data.split("|")[1]
-
-    db.set_user_attribute(user_id, "current_chat_mode", chat_mode)
-    db.start_new_dialog(user_id)
-
-    await context.bot.send_message(
-        update.callback_query.message.chat.id,
-        f"{config.chat_modes[chat_mode]['welcome_message']}",
-        parse_mode=ParseMode.HTML
-    )
-
-
-def get_settings_menu(user_id: int):
-    current_model = db.get_user_attribute(user_id, "current_model")
-    text = config.models["info"][current_model]["description"]
-
-    text += "\n\n"
-    score_dict = config.models["info"][current_model]["scores"]
-    for score_key, score_value in score_dict.items():
-        text += "🟢" * score_value + "⚪️" * (5 - score_value) + f" – {score_key}\n\n"
-
-    text += "\nSelect <b>model</b>:"
-
-    # buttons to choose models
-    buttons = []
-    for model_key in config.models["available_text_models"]:
-        title = config.models["info"][model_key]["name"]
-        if model_key == current_model:
-            title = "✅ " + title
-
-        buttons.append(
-            InlineKeyboardButton(title, callback_data=f"set_settings|{model_key}")
-        )
-    reply_markup = InlineKeyboardMarkup([buttons])
-
-    return text, reply_markup
-
-
-async def settings_handle(update: Update, context: CallbackContext):
-    await register_user_if_not_exists(update, context, update.message.from_user)
-    if await is_previous_message_not_answered_yet(update, context): return
-
-    user_id = update.message.from_user.id
-    db.set_user_attribute(user_id, "last_interaction", datetime.now())
-
-    text, reply_markup = get_settings_menu(user_id)
-    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
-
-
-async def set_settings_handle(update: Update, context: CallbackContext):
-    await register_user_if_not_exists(update.callback_query, context, update.callback_query.from_user)
-    user_id = update.callback_query.from_user.id
-
-    query = update.callback_query
-    await query.answer()
-
-    _, model_key = query.data.split("|")
-    db.set_user_attribute(user_id, "current_model", model_key)
-    db.start_new_dialog(user_id)
-
-    text, reply_markup = get_settings_menu(user_id)
-    try:
-        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
-    except telegram.error.BadRequest as e:
-        if str(e).startswith("Message is not modified"):
-            pass
-
-
-async def show_balance_handle(update: Update, context: CallbackContext):
-    await register_user_if_not_exists(update, context, update.message.from_user)
-
-    user_id = update.message.from_user.id
-    db.set_user_attribute(user_id, "last_interaction", datetime.now())
-
-    # count total usage statistics
-    total_n_spent_dollars = 0
-    total_n_used_tokens = 0
-
-    n_used_tokens_dict = db.get_user_attribute(user_id, "n_used_tokens")
-    n_generated_images = db.get_user_attribute(user_id, "n_generated_images")
-    n_transcribed_seconds = db.get_user_attribute(user_id, "n_transcribed_seconds")
-
-    details_text = "🏷️ Details:\n"
-    for model_key in sorted(n_used_tokens_dict.keys()):
-        n_input_tokens, n_output_tokens = n_used_tokens_dict[model_key]["n_input_tokens"], n_used_tokens_dict[model_key]["n_output_tokens"]
-        total_n_used_tokens += n_input_tokens + n_output_tokens
-
-        n_input_spent_dollars = config.models["info"][model_key]["price_per_1000_input_tokens"] * (n_input_tokens / 1000)
-        n_output_spent_dollars = config.models["info"][model_key]["price_per_1000_output_tokens"] * (n_output_tokens / 1000)
-        total_n_spent_dollars += n_input_spent_dollars + n_output_spent_dollars
-
-        details_text += f"- {model_key}: <b>{n_input_spent_dollars + n_output_spent_dollars:.03f}$</b> / <b>{n_input_tokens + n_output_tokens} tokens</b>\n"
-
-    # image generation
-    image_generation_n_spent_dollars = config.models["info"]["dalle-2"]["price_per_1_image"] * n_generated_images
-    if n_generated_images != 0:
-        details_text += f"- DALL·E 2 (image generation): <b>{image_generation_n_spent_dollars:.03f}$</b> / <b>{n_generated_images} generated images</b>\n"
-
-    total_n_spent_dollars += image_generation_n_spent_dollars
-
-    # voice recognition
-    voice_recognition_n_spent_dollars = config.models["info"]["whisper"]["price_per_1_min"] * (n_transcribed_seconds / 60)
-    if n_transcribed_seconds != 0:
-        details_text += f"- Whisper (voice recognition): <b>{voice_recognition_n_spent_dollars:.03f}$</b> / <b>{n_transcribed_seconds:.01f} seconds</b>\n"
-
-    total_n_spent_dollars += voice_recognition_n_spent_dollars
-
-
-    text = f"You spent <b>{total_n_spent_dollars:.03f}$</b>\n"
-    text += f"You used <b>{total_n_used_tokens}</b> tokens\n\n"
-    text += details_text
-
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-
-
 async def edited_message_handle(update: Update, context: CallbackContext):
     if update.edited_message.chat.type == "private":
         text = "🥲 Unfortunately, message <b>editing</b> is not supported"
@@ -716,10 +624,7 @@ async def error_handle(update: Update, context: CallbackContext) -> None:
 async def post_init(application: Application):
     await application.bot.set_my_commands([
         BotCommand("/new", "Start new dialog"),
-        #BotCommand("/mode", "Select chat mode"),
         BotCommand("/retry", "Re-generate response for previous query"),
-        #BotCommand("/balance", "Show balance"),
-        BotCommand("/settings", "Show settings"),
         BotCommand("/help", "Show help message"),
     ])
 
@@ -755,15 +660,6 @@ def run_bot() -> None:
 
     application.add_handler(MessageHandler(filters.AUDIO & user_filter, audio_file_handle))
     application.add_handler(MessageHandler(filters.VOICE & user_filter, voice_message_handle))
-
-    #application.add_handler(CommandHandler("mode", show_chat_modes_handle, filters=user_filter))
-    #application.add_handler(CallbackQueryHandler(show_chat_modes_callback_handle, pattern="^show_chat_modes"))
-    #application.add_handler(CallbackQueryHandler(set_chat_mode_handle, pattern="^set_chat_mode"))
-
-    application.add_handler(CommandHandler("settings", settings_handle, filters=user_filter))
-    application.add_handler(CallbackQueryHandler(set_settings_handle, pattern="^set_settings"))
-
-    #application.add_handler(CommandHandler("balance", show_balance_handle, filters=user_filter))
 
     application.add_error_handler(error_handle)
 
