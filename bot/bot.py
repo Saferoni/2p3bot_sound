@@ -117,26 +117,7 @@ async def translate_and_reply(update: Update, context: CallbackContext):
 
     localized_prompt = f"{LOCALIZED_PROMPT_FOR_GPT_TO_TRANSLATE_START}{update.message.from_user.language_code}"
 
-    try:
-        async with user_semaphores[user_id]:
-            # Send placeholder message to user
-            placeholder_message = await update.message.reply_text("...")
-
-            # Send typing action
-            await update.message.chat.send_action(action="typing")
-
-            # Translate the prompt and get the response from OpenAI
-            translated_response = await openai_utils.translate_text(localized_prompt)
-
-            # Update user data
-            new_dialog_message = {"user": localized_prompt, "bot": translated_response, "date": datetime.now()}
-            db.set_dialog_messages(user_id, db.get_dialog_messages(user_id, dialog_id=None) + [new_dialog_message], dialog_id=None)
-
-            await context.bot.edit_message_text(translated_response, chat_id=placeholder_message.chat_id, message_id=placeholder_message.message_id, parse_mode=ParseMode.HTML)
-    except Exception as e:
-        error_text = f"Something went wrong during translation. Reason: {e}"
-        logger.error(error_text)
-        await update.message.reply_text(error_text)
+    await message_handle(update, context, message=localized_prompt)
 
 
 async def start_handle(update: Update, context: CallbackContext):
@@ -148,7 +129,9 @@ async def start_handle(update: Update, context: CallbackContext):
 
     reply_text = HELP_MESSAGE
 
-    await update.message.reply_text(reply_text, parse_mode=ParseMode.HTML)
+    await translate_and_reply(update, context)
+
+    #await update.message.reply_text(reply_text, parse_mode=ParseMode.HTML)
 
 
 async def help_handle(update: Update, context: CallbackContext):
@@ -395,7 +378,7 @@ async def audio_file_handle(update: Update, context: CallbackContext):
         return
 
     # todo добавить перевод через транслейтера апи опен ай и винести строки отдельно в переменние настроек
-    if audio.file_size > 25 * 1024 * 1024:
+    if audio.file_size > 15 * 1024 * 1024:
         await update.message.reply_text("📝 Sorry in this time file size maximum 10 mb.")
         #await process_large_audio(update, context)
     else:
