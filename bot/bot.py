@@ -394,12 +394,12 @@ async def audio_file_handle(update: Update, context: CallbackContext):
         await update.message.reply_text("🥲 Please, send an audio file.")
         return
 
-    # todo добавить перевод через транслейтера апи опен ай
-    await update.message.reply_text("📝 When the transcription is completed, we will send you a text file, but for now we can chat.")
-
+    # todo добавить перевод через транслейтера апи опен ай и винести строки отдельно в переменние настроек
     if audio.file_size > 25 * 1024 * 1024:
-        await process_large_audio(update, context)
+        await update.message.reply_text("📝 Sorry in this time file size maximum 10 mb.")
+        #await process_large_audio(update, context)
     else:
+        await update.message.reply_text("📝 When the transcription is completed, we will send you a text file, but for now we can chat.")
         await process_small_audio(update, context)
 
 
