@@ -6,7 +6,7 @@ services:
     image: mongo:latest
     restart: always
     ports:
-      - 127.0.0.1:${MONGODB_PORT:-27017}:${MONGODB_PORT:-27017}
+      - 127.0.0.1:${MONGODB_PORT:-27018}:${MONGODB_PORT:-27018}
     volumes:
       - ${MONGODB_PATH:-./mongodb}:/data/db
     # TODO: add auth
@@ -26,10 +26,10 @@ services:
     image: mongo-express:latest
     restart: always
     ports:
-      - 127.0.0.1:${MONGO_EXPRESS_PORT:-8081}:${MONGO_EXPRESS_PORT:-8081}
+      - 127.0.0.1:${MONGO_EXPRESS_PORT:-8088}:${MONGO_EXPRESS_PORT:-8088}
     environment:
       - ME_CONFIG_MONGODB_SERVER=mongo
-      - ME_CONFIG_MONGODB_PORT=${MONGODB_PORT:-27017}
+      - ME_CONFIG_MONGODB_PORT=${MONGODB_PORT:-27018}
       - ME_CONFIG_MONGODB_ENABLE_ADMIN=false
       - ME_CONFIG_MONGODB_AUTH_DATABASE=${CONTAINER_NAME}
       - ME_CONFIG_BASICAUTH_USERNAME=${MONGO_EXPRESS_USERNAME:-username}
