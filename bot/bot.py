@@ -7,9 +7,9 @@ import html
 import json
 import tempfile
 import pydub
+import requests
 from pathlib import Path
 from datetime import datetime
-import openai
 
 import telegram
 from telegram import (
@@ -47,6 +47,19 @@ HELP_MESSAGE = "Hi! I'm a bot with implemented OpenAI API 🤖\n\n"
 HELP_GROUP_CHAT_MESSAGE = "Maybe later?"
 
 LOCALIZED_PROMPT_FOR_GPT_TO_TRANSLATE_START = "Переведи данную строку 'Hello! I\'m glad to welcome you! I\'m a master of transforming sound waves into text characters. Share your audio or dictation, and I\'ll create a text version for you. After that, we can converse on any topic you\'re interested in through our chat – as my mind operates as smoothly as Swiss watches! 🕐💬' и видай в ответе только ее на язике "
+
+
+def split_text_into_chunks(text, chunk_size):
+    for i in range(0, len(text), chunk_size):
+        yield text[i:i + chunk_size]
+
+
+def get_localized_prompt(update: Update, message: str):
+    language_code = update.message.from_user.language_code
+    if message != "":
+        return f"Переведи данную строку '{message}' и видай в ответе только ее на язике {language_code}"
+    else:
+        return ""
 
 
 async def register_user_if_not_exists(update: Update, context: CallbackContext, user: User):
@@ -108,26 +121,22 @@ async def is_bot_mentioned(update: Update, context: CallbackContext):
          return False
 
 
-async def translate_and_reply(update: Update, context: CallbackContext):
-    await register_user_if_not_exists(update, context, update.message.from_user)
-    if await is_previous_message_not_answered_yet(update, context): return
-
-    user_id = update.message.from_user.id
-    db.set_user_attribute(user_id, "last_interaction", datetime.now())
-
+async def localized_start_and_reply(update: Update, context: CallbackContext):
     localized_prompt = f"{LOCALIZED_PROMPT_FOR_GPT_TO_TRANSLATE_START}{update.message.from_user.language_code}"
-
+    await update.message.reply_text("Wait, we are creating a bot for you personally.")
     await message_handle(update, context, message=localized_prompt)
+
+
+async def translate_text_and_reply(update: Update, context: CallbackContext, message=None):
+    await message_handle(update, context, message=get_localized_prompt(update, message))
 
 
 async def start_handle(update: Update, context: CallbackContext):
     await register_user_if_not_exists(update, context, update.message.from_user)
     user_id = update.message.from_user.id
-
     db.set_user_attribute(user_id, "last_interaction", datetime.now())
     db.start_new_dialog(user_id)
-
-    await translate_and_reply(update, context)
+    await localized_start_and_reply(update, context)
 
 
 async def help_handle(update: Update, context: CallbackContext):
@@ -167,6 +176,8 @@ async def retry_handle(update: Update, context: CallbackContext):
 
 
 async def message_handle(update: Update, context: CallbackContext, message=None, use_new_dialog_timeout=True):
+    #logger.error(f"message_handle: {update}")
+
     # check if bot was mentioned (for group chats)
     if not await is_bot_mentioned(update, context):
         return
@@ -187,10 +198,6 @@ async def message_handle(update: Update, context: CallbackContext, message=None,
 
     user_id = update.message.from_user.id
     chat_mode = db.get_user_attribute(user_id, "current_chat_mode")
-
-    if chat_mode == "artist":
-        await generate_image_handle(update, context, message=message)
-        return
 
     async def message_handle_fn():
         # new dialog timeout
@@ -344,7 +351,21 @@ async def voice_message_handle(update: Update, context: CallbackContext):
             transcribed_text = await openai_utils.transcribe_audio(f)
 
             if transcribed_text is None:
-                 transcribed_text = ""
+                transcribed_text = ""
+
+    if len(transcribed_text) > 500:
+        # Создаем временный файл и записываем в него текстовую строку
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            text_path = os.path.join(tmp_dir, f"voice{datetime.now()}.txt")
+            with open(text_path, 'w') as file:
+                file.write(transcribed_text)
+
+            # Отправляем файл пользователю
+            with open(text_path, 'rb') as file:
+                await update.message.reply_document(document=InputFile(file))
+                await message_handle(update, context, get_localized_prompt(update, "📝 Transcription completed! If you want to talk about this file, please answer it with your question."))
+            os.remove(text_path)
+            return
 
     text = f"🎤: <i>{transcribed_text}</i>"
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
@@ -366,29 +387,95 @@ async def audio_file_handle(update: Update, context: CallbackContext):
     user_id = update.message.from_user.id
     db.set_user_attribute(user_id, "last_interaction", datetime.now())
 
-    await update.message.chat.send_action(action="upload_photo")
+    await update.message.chat.send_action(action="upload_audio")
 
     audio = update.message.audio
     if not audio:
         await update.message.reply_text("🥲 Please, send an audio file.")
         return
 
-    # todo добавить перевод через транслейтера апи опен ай и винести строки отдельно в переменние настроек
-    if audio.file_size > 15 * 1024 * 1024:
-        await update.message.reply_text("📝 Sorry in this time file size maximum 10 mb.")
-        #await process_large_audio(update, context)
-    else:
-        await update.message.reply_text("📝 When the transcription is completed, we will send you a text file, but for now we can chat.")
+    if audio.file_size < 20 * 1024 * 1024:
         await process_small_audio(update, context)
+    else:
+        await process_large_audio(update, context)
 
 
-async def process_large_audio(update: Update, context: CallbackContext):
+async def process_small_audio(update: Update, context: CallbackContext):
+    await message_handle(update, context, get_localized_prompt(update, "📝 When the tranсription is completed, we will send you a text file, but for now we can chat."))
+
     audio = update.message.audio
     # Download the audio file
     with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_dir = Path(tmp_dir)
-        audio_path = tmp_dir / f"{audio.file_id}{audio.file_name}"
-        # download
+        audio_path = Path(tmp_dir) / f"{audio.file_id}{audio.file_name}"
+        voice_file = await context.bot.get_file(audio.file_id)
+        await voice_file.download_to_drive(audio_path)
+
+        # Transcribe the audio file
+        with open(audio_path, "rb") as f:
+            transcribed_text = await openai_utils.transcribe_audio(f)
+            if transcribed_text is None:
+                transcribed_text = ""
+
+        # Создаем временный файл, записываем в него строку, отправляем фавйл пользователю
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            text_path = os.path.join(tmp_dir, f"{audio.file_name}.txt")
+            with open(text_path, 'w') as file:
+                file.write(transcribed_text)
+            with open(text_path, 'rb') as file:
+                await update.message.reply_document(document=InputFile(file))
+            os.remove(text_path)
+            await message_handle(update, context, get_localized_prompt(update, "📝 Transcription completed! If you want to talk about this file, please answer it with your question."))
+
+
+async def process_text_file(update: Update, context: CallbackContext):
+    #logger.error(f"process_text_file: {update}")
+    if not await is_bot_mentioned(update, context):
+        return
+
+    await register_user_if_not_exists(update, context, update.message.from_user)
+    if await is_previous_message_not_answered_yet(update, context):
+        return
+
+    user_id = update.message.from_user.id
+    db.set_user_attribute(user_id, "last_interaction", datetime.now())
+    replay_doc = update.message.reply_to_message.document
+    if not replay_doc:
+        await update.message.reply_text("Please, send a text document.")
+        return
+
+    if "text" not in replay_doc.mime_type:
+        await update.message.reply_text("The sent file is not a text document.")
+        return
+
+    if len(update.message.text) < 10:
+        await update.message.reply_text("Replay answer must be more then 10 simbols")
+        return
+
+    db.start_new_dialog(user_id)
+    replay_doc = update.message.reply_to_message.document
+    if replay_doc.mime_type == 'text/plain':
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / f"{replay_doc.file_id}{replay_doc.file_name}"
+            document = await context.bot.get_file(replay_doc.file_id)
+            await document.download_to_drive(path)
+            with open(path, 'r', encoding="utf-8") as file:
+                file_text = file.read()
+                chunks = [file_text[i:i+3900] for i in range(0, len(file_text), 3900)]
+                await message_handle(update, context, f"{update.message.text} from this text ``` /n {chunks[0]}```")
+            os.remove(path)
+    else:
+        await update.message.reply_text("No text document found in the message.")
+
+
+async def process_large_audio(update: Update, context: CallbackContext):
+    await message_handle(update, context, get_localized_prompt(update, "📝 Sorry in this time file size maximum 20mb."))
+    # todo убрать return как только предумаю как закачать большой файл
+    return
+
+    audio = update.message.audio
+    # Download the audio file
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        audio_path = Path(tmp_dir) / f"{audio.file_id}{audio.file_name}"
         voice_file = await context.bot.get_file(audio.file_id)
         await voice_file.download_to_drive(audio_path)
 
@@ -411,134 +498,34 @@ async def process_large_audio(update: Update, context: CallbackContext):
 
             os.remove(chunk_path)
 
-        with open(tmp_dir / "transcribed_text.txt", "w") as f:
+        with open(tmp_dir / f"{audio.file_name}.txt", "w") as f:
             f.write(transcribed_text)
 
         # Send the transcribed text back to the user
-        with open(tmp_dir / "transcribed_text.txt", "rb") as f:
+        with open(tmp_dir / f"{audio.file_name}.txt", "rb") as f:
             await update.message.reply_document(document=InputFile(f))
 
 
-async def process_small_audio(update: Update, context: CallbackContext):
-    audio = update.message.audio
-    # Download the audio file
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_dir = Path(tmp_dir)
-        audio_path = tmp_dir / f"{audio.file_id}{audio.file_name}"
-        # download
-        voice_file = await context.bot.get_file(audio.file_id)
-        await voice_file.download_to_drive(audio_path)
+# Method to download audio file from Telegram Bot API
+async def download_large_audio_from_telegram_bot(file_id, token):
+    api_url = f"https://api.telegram.org/bot{token}/getFile"
+    params = {"file_id": file_id}
 
-        # Transcribe the audio file
-        with open(audio_path, "rb") as f:
-            transcribed_text = await openai_utils.transcribe_audio(f)
+    response = requests.get(api_url, params=params)
+    file_info = response.json().get("result")
 
-            if transcribed_text is None:
-                transcribed_text = ""
+    if file_info:
+        file_path = file_info["file_path"]
+        download_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
 
-        # Создаем временный файл и записываем в него текстовую строку
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            text_path = os.path.join(tmp_dir, f"{audio.file_name}.txt")
-            with open(text_path, 'w') as file:
-                file.write(transcribed_text)
+        response = requests.get(download_url)
+        if response.status_code == 200:
+            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                temp_file.write(response.content)
+                temp_file_path = temp_file.name
+            return temp_file_path
 
-            # Отправляем файл пользователю
-            with open(text_path, 'rb') as file:
-                await update.message.reply_document(document=InputFile(file))
-
-            # Удаляем временный файл
-            os.remove(text_path)
-
-
-async def audio_file_handle2(update: Update, context: CallbackContext):
-    if not await is_bot_mentioned(update, context):
-        return
-
-    await register_user_if_not_exists(update, context, update.message.from_user)
-    if await is_previous_message_not_answered_yet(update, context):
-        return
-
-    user_id = update.message.from_user.id
-    db.set_user_attribute(user_id, "last_interaction", datetime.now())
-
-    audio = update.message.audio
-    if not audio:
-        await update.message.reply_text("🥲 Please, send an audio file.")
-        return
-
-    await update.message.reply_text("📝 When the transcription is completed, we will send you a text file, but for now we can chat.")
-
-    # Download the audio file
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_dir = Path(tmp_dir)
-        audio_path = tmp_dir / f"{audio.file_id}{audio.file_name}"
-        # download
-        voice_file = await context.bot.get_file(audio.file_id)
-        await voice_file.download_to_drive(audio_path)
-
-        # convert to mp3
-        #audio_mp3_path = tmp_dir / f"{audio.file_id}mp3.mp3"
-        #pydub.AudioSegment.from_file(voice_file).export(audio_mp3_path, format="mp3")
-
-        # Transcribe the audio file
-        # transcribe
-        with open(audio_path, "rb") as f:
-            transcribed_text = await openai_utils.transcribe_audio(f)
-
-            if transcribed_text is None:
-                transcribed_text = ""
-
-    # Создаем временный файл и записываем в него текстовую строку
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        text_path = os.path.join(tmp_dir, f"{audio.file_name}.txt")
-        with open(text_path, 'w') as file:
-            file.write(transcribed_text)
-
-        # Отправляем файл пользователю
-        with open(text_path, 'rb') as file:
-            await update.message.reply_document(document=InputFile(file))
-
-        # Удаляем временный файл
-        os.remove(text_path)
-
-        #if (update.message.text.strip() != ""):
-         #   await message_handle(update, context, message=f"{update.message.text}:---{transcribed_text}---")
-    # TODO clean leather OLD Code with send plainText
-    # Send the transcribed text back to the user
-    # text = f"🍾: <i>{transcribed_text}</i>"
-    # await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-
-    # Process the transcribed text further if needed
-    #await message_handle(update, context, message=transcribed_text)
-
-
-async def generate_image_handle(update: Update, context: CallbackContext, message=None):
-    await register_user_if_not_exists(update, context, update.message.from_user)
-    if await is_previous_message_not_answered_yet(update, context): return
-
-    user_id = update.message.from_user.id
-    db.set_user_attribute(user_id, "last_interaction", datetime.now())
-
-    await update.message.chat.send_action(action="upload_photo")
-
-    message = message or update.message.text
-
-    try:
-        image_urls = await openai_utils.generate_images(message, n_images=config.return_n_generated_images)
-    except openai.error.InvalidRequestError as e:
-        if str(e).startswith("Your request was rejected as a result of our safety system"):
-            text = "🥲 Your request <b>doesn't comply</b> with OpenAI's usage policies.\nWhat did you write there, huh?"
-            await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-            return
-        else:
-            raise
-
-    # token usage
-    db.set_user_attribute(user_id, "n_generated_images", config.return_n_generated_images + db.get_user_attribute(user_id, "n_generated_images"))
-
-    for i, image_url in enumerate(image_urls):
-        await update.message.chat.send_action(action="upload_photo")
-        await update.message.reply_photo(image_url, parse_mode=ParseMode.HTML)
+    return None
 
 
 async def new_dialog_handle(update: Update, context: CallbackContext):
@@ -632,6 +619,7 @@ def run_bot() -> None:
     application.add_handler(CommandHandler("help", help_handle, filters=user_filter))
     application.add_handler(CommandHandler("help_group_chat", help_group_chat_handle, filters=user_filter))
 
+    application.add_handler(MessageHandler(filters.REPLY, process_text_file))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & user_filter, message_handle))
     application.add_handler(CommandHandler("retry", retry_handle, filters=user_filter))
     application.add_handler(CommandHandler("new", new_dialog_handle, filters=user_filter))
