@@ -2,7 +2,7 @@ version: "3"
 
 services:
   mongo:
-    container_name: mongosafer
+    container_name: mongodb_${CONTAINER_NAME}
     image: mongo:latest
     restart: always
     ports:
@@ -12,7 +12,7 @@ services:
     # TODO: add auth
 
   2p3_telegram_bot:
-    container_name: 2p3_telegram_bot
+    container_name: ${CONTAINER_NAME}
     command: python3 bot/bot.py
     restart: always
     build:
@@ -22,7 +22,7 @@ services:
       - mongo
 
   mongo_express:
-    container_name: 2p3_mongo-express
+    container_name: mongo-express_${CONTAINER_NAME}
     image: mongo-express:latest
     restart: always
     ports:
@@ -31,7 +31,7 @@ services:
       - ME_CONFIG_MONGODB_SERVER=mongo
       - ME_CONFIG_MONGODB_PORT=${MONGODB_PORT:-27017}
       - ME_CONFIG_MONGODB_ENABLE_ADMIN=false
-      - ME_CONFIG_MONGODB_AUTH_DATABASE=2p3_telegram_bot
+      - ME_CONFIG_MONGODB_AUTH_DATABASE=${CONTAINER_NAME}
       - ME_CONFIG_BASICAUTH_USERNAME=${MONGO_EXPRESS_USERNAME:-username}
       - ME_CONFIG_BASICAUTH_PASSWORD=${MONGO_EXPRESS_PASSWORD:-password}
     depends_on:
