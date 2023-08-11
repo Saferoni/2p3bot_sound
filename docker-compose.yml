@@ -2,7 +2,7 @@ version: "3"
 
 services:
   mongo:
-    container_name: mongodb_${CONTAINER_NAME}
+    container_name: mongosafer
     image: mongo:latest
     restart: always
     ports:
@@ -12,7 +12,7 @@ services:
     # TODO: add auth
 
   2p3_telegram_bot:
-    container_name: ${CONTAINER_NAME}
+    container_name: 2p3_telegram_bot
     command: python3 bot/bot.py
     restart: always
     build:
@@ -22,7 +22,7 @@ services:
       - mongo
 
   mongo_express:
-    container_name: mongo-express_${CONTAINER_NAME}
+    container_name: 2p3_mongo-express
     image: mongo-express:latest
     restart: always
     ports:
